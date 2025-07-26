@@ -1,3 +1,4 @@
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -12,6 +13,7 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import re
 from datetime import datetime
+import pandas as pd
 
 
 def setup_driver(chromedriver_path):
@@ -56,75 +58,6 @@ def handle_cookie_popup(driver, wait):
             continue
 
     print("ℹ️ No cookie popup found.")
-    return False
-
-
-def select_c2_level(driver, wait):
-    """Select C2 level based on the actual HTML structure"""
-    c2_selectors = [
-        "//div[contains(@class, 'clickable-element') and div[text()='C2']]",
-        "//div[contains(@class, 'Text') and contains(@class, 'clickable-element')]//div[text()='C2']/parent::div",
-        "//div[text()='C2' and ancestor::div[contains(@class, 'clickable-element')]]",
-        "//div[contains(@class, 'entry-6')]//div[contains(@class, 'clickable-element')]",
-        "//div[contains(@style, 'background-color: rgb(160, 48, 160)') and contains(@class, 'clickable-element')]"
-    ]
-
-    print("🔍 Searching for C2 level selector...")
-
-    try:
-        wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'RepeatingGroup')]")))
-        print("✅ Level selector container loaded.")
-        time.sleep(2)
-    except TimeoutException:
-        print("❌ Level selector container not found.")
-        return False
-
-    for i, selector in enumerate(c2_selectors):
-        try:
-            print(f"🔍 Trying selector {i + 1}: {selector}")
-            c2_element = wait.until(EC.presence_of_element_located((By.XPATH, selector)))
-
-            if c2_element.is_displayed():
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", c2_element)
-                time.sleep(0.5)
-
-                try:
-                    WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, selector)))
-                    c2_element.click()
-                    print("✅ C2 selected with normal click!")
-                    time.sleep(1)
-                    return True
-                except:
-                    driver.execute_script("arguments[0].click();", c2_element)
-                    print("✅ C2 selected with JavaScript click!")
-                    time.sleep(1)
-                    return True
-
-        except TimeoutException:
-            continue
-        except Exception as e:
-            continue
-
-    # Debug search
-    try:
-        print("\n🔍 DEBUG: Searching for all level elements...")
-        level_elements = driver.find_elements(By.XPATH, "//div[contains(@class, 'clickable-element')]//div")
-
-        for i, element in enumerate(level_elements):
-            try:
-                text = element.text.strip()
-                if text and len(text) <= 3:
-                    if text == "C2":
-                        print(f"🎯 Found C2 element, attempting click...")
-                        parent_element = element.find_element(By.XPATH, "./parent::div")
-                        driver.execute_script("arguments[0].click();", parent_element)
-                        print("✅ C2 clicked via debug search!")
-                        return True
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"Debug search failed: {e}")
-
     return False
 
 
@@ -243,9 +176,9 @@ def scroll_and_collect_data(driver, wait):
 
     last_height = driver.execute_script("return document.body.scrollHeight")
     scroll_attempts = 0
-    max_scroll_attempts = 100
+    max_scroll_attempts = 200  # Increased attempts for more data
     no_change_count = 0
-    max_no_change = 5
+    max_no_change = 10  # Increased tolerance for no change
 
     while scroll_attempts < max_scroll_attempts:
         # Extract current network data before scrolling
@@ -259,9 +192,9 @@ def scroll_and_collect_data(driver, wait):
                         for hit in response['hits']['hits']:
                             if '_source' in hit:
                                 vocab_entry = hit['_source']
-                                # Check if we already have this entry (by ID)
-                                entry_id = vocab_entry.get('_id', vocab_entry.get('id_text', ''))
-                                if not any(existing.get('_id') == entry_id or existing.get('id_text') == entry_id
+                                # Use a unique identifier, combining _id and id_text if available
+                                entry_id = vocab_entry.get('_id', '') + vocab_entry.get('id_text', '')
+                                if not any((existing.get('_id', '') + existing.get('id_text', '') == entry_id)
                                            for existing in all_vocabulary_data):
                                     all_vocabulary_data.append(vocab_entry)
 
@@ -287,7 +220,7 @@ def scroll_and_collect_data(driver, wait):
                 f"🔄 Scroll {scroll_attempts}: New content! Height: {last_height} → {new_height}, Vocab entries: {len(all_vocabulary_data)}")
             last_height = new_height
 
-    # Final data extraction
+    # Final data extraction to ensure all last-minute entries are caught
     final_data = extract_network_data(driver)
     for response_data in final_data:
         if 'responses' in response_data:
@@ -296,8 +229,8 @@ def scroll_and_collect_data(driver, wait):
                     for hit in response['hits']['hits']:
                         if '_source' in hit:
                             vocab_entry = hit['_source']
-                            entry_id = vocab_entry.get('_id', vocab_entry.get('id_text', ''))
-                            if not any(existing.get('_id') == entry_id or existing.get('id_text') == entry_id
+                            entry_id = vocab_entry.get('_id', '') + vocab_entry.get('id_text', '')
+                            if not any((existing.get('_id', '') + existing.get('id_text', '') == entry_id)
                                        for existing in all_vocabulary_data):
                                 all_vocabulary_data.append(vocab_entry)
 
@@ -326,13 +259,12 @@ def clean_text(text):
     return text.strip()
 
 
-def create_xml_from_vocabulary(vocabulary_data, filename="english_profile_c2_vocabulary.xml"):
+def create_xml_from_vocabulary(vocabulary_data, filename="english_profile_all_vocabulary.xml"):
     """Create XML file from vocabulary data"""
     print(f"📝 Creating XML file with {len(vocabulary_data)} entries...")
 
     # Create root element
     root = ET.Element("english_profile_vocabulary")
-    root.set("level", "C2")
     root.set("total_entries", str(len(vocabulary_data)))
     root.set("extracted_date", datetime.now().isoformat())
 
@@ -357,34 +289,37 @@ def create_xml_from_vocabulary(vocabulary_data, filename="english_profile_c2_voc
             'culture_number': 'culture_number',
             'refid_text': 'reference_id',
             'Created Date': 'created_date',
-            'Modified Date': 'modified_date'
+            'Modified Date': 'modified_date',
+            'guideword_text': 'guideword_text'
         }
 
         # Add basic fields
         for json_key, xml_key in fields_mapping.items():
-            if json_key in entry and entry[json_key]:
+            if json_key in entry and entry[json_key] is not None:  # Check for None as well
                 field_elem = ET.SubElement(vocab_elem, xml_key)
                 field_elem.text = clean_text(entry[json_key])
 
         # Handle complex fields (lists and lookups)
-        if 'l_grammars_list_custom_evp_l_grammar' in entry:
+        if 'l_grammars_list_custom_evp_l_grammar' in entry and entry['l_grammars_list_custom_evp_l_grammar']:
             grammars_elem = ET.SubElement(vocab_elem, "grammars")
             for grammar in entry['l_grammars_list_custom_evp_l_grammar']:
                 grammar_elem = ET.SubElement(grammars_elem, "grammar")
                 grammar_elem.text = clean_text(grammar)
 
-        if 'l_topics_list_custom_evp_l_topic' in entry:
+        if 'l_topics_list_custom_evp_l_topic' in entry and entry['l_topics_list_custom_evp_l_topic']:
             topics_elem = ET.SubElement(vocab_elem, "topics")
             for topic in entry['l_topics_list_custom_evp_l_topic']:
                 topic_elem = ET.SubElement(topics_elem, "topic")
                 topic_elem.text = clean_text(topic)
 
-        # Add any other fields that might exist
+        # Add any other fields that might exist and are not explicitly mapped
         for key, value in entry.items():
-            if key not in fields_mapping and not key.startswith('l_') and value:
+            if key not in fields_mapping and not key.startswith('l_') and value is not None:
                 # Create element for unmapped fields
                 clean_key = re.sub(r'[^a-zA-Z0-9_]', '_', key).lower()
-                if clean_key and not any(child.tag == clean_key for child in vocab_elem):
+                # Ensure the key is not empty and not already added as a direct mapping
+                if clean_key and clean_key not in fields_mapping.values() and not any(
+                        child.tag == clean_key for child in vocab_elem):
                     other_elem = ET.SubElement(vocab_elem, clean_key)
                     other_elem.text = clean_text(value)
 
@@ -403,11 +338,223 @@ def create_xml_from_vocabulary(vocabulary_data, filename="english_profile_c2_voc
     return filename
 
 
+def create_excel_from_vocabulary(vocabulary_data, filename="english_profile_all_vocabulary.xlsx"):
+    """Create Excel file with teaching-relevant fields only"""
+    print(f"📊 Creating Excel file with {len(vocabulary_data)} entries...")
+
+    # Define teaching-relevant fields
+    teaching_fields = {
+        'base_text': 'Word',
+        'hw_text': 'Headword',
+        'definition_text': 'Definition',
+        'learnerexamples_text': 'Examples',
+        'pos_text': 'Part of Speech',
+        'cefr_text_text': 'CEFR Level',
+        'ukpron_text': 'UK Pronunciation',
+        'guideword_text': 'Guide Word',
+        'l_topic_text_text': 'Topic',
+        'searchterms_text': 'Search Terms',
+        'audiofilename_text': 'Audio File'
+    }
+
+    # Prepare data for DataFrame
+    excel_data = []
+
+    for entry in vocabulary_data:
+        row = {}
+
+        # Extract basic fields
+        for json_key, excel_col in teaching_fields.items():
+            value = entry.get(json_key, '')
+
+            # Clean and format the value
+            if value is not None:
+                # Handle different data types
+                if isinstance(value, (list, tuple)):
+                    value = '; '.join(str(v) for v in value)
+                else:
+                    value = str(value).strip()
+
+                # Clean text for Excel
+                value = clean_text_for_excel(value)
+            else:
+                value = ""  # Ensure None values are empty strings
+
+            row[excel_col] = value
+
+        # Add derived/calculated fields that might be useful for teaching
+
+        # Word length (useful for difficulty assessment)
+        base_word = row.get('Word', '')
+        row['Word Length'] = len(base_word.split()[0]) if base_word else 0
+
+        # Number of examples
+        examples = row.get('Examples', '')
+        row['Example Count'] = len([ex.strip() for ex in examples.split(';') if ex.strip()]) if examples else 0
+
+        # Has pronunciation guide
+        row['Has Pronunciation'] = 'Yes' if row.get('UK Pronunciation', '') else 'No'
+
+        # Has audio
+        row['Has Audio'] = 'Yes' if row.get('Audio File', '') else 'No'
+
+        # Simple/Complex definition (word count)
+        definition = row.get('Definition', '')
+        row['Definition Length'] = len(definition.split()) if definition else 0
+
+        excel_data.append(row)
+
+    # Create DataFrame
+    df = pd.DataFrame(excel_data)
+
+    # Reorder columns for better teaching use
+    preferred_order = [
+        'Word', 'Headword', 'Part of Speech', 'CEFR Level',
+        'Definition', 'Guide Word', 'Examples',
+        'UK Pronunciation', 'Topic', 'Has Pronunciation', 'Has Audio',
+        'Word Length', 'Example Count', 'Definition Length',
+        'Search Terms', 'Audio File'
+    ]
+
+    # Reorder columns (keep only existing ones)
+    existing_cols = [col for col in preferred_order if col in df.columns]
+    remaining_cols = [col for col in df.columns if col not in existing_cols]
+    final_order = existing_cols + remaining_cols
+
+    df = df[final_order]
+
+    # Sort by word alphabetically
+    df = df.sort_values('Word', na_position='last')
+
+    # Create Excel file with formatting
+    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+        # Main vocabulary sheet
+        df.to_excel(writer, sheet_name='All Vocabulary', index=False)
+
+        # Get the workbook and worksheet
+        workbook = writer.book
+        worksheet = writer.sheets['All Vocabulary']
+
+        # Auto-adjust column widths
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+
+            # Set reasonable width limits
+            adjusted_width = min(max_length + 2, 75)  # Increased max width for longer texts
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+
+        # Create summary statistics sheet
+        create_summary_sheet(df, writer, workbook)
+
+    print(f"✅ Excel file created: {filename}")
+    return filename
+
+
+def clean_text_for_excel(text):
+    """Clean text specifically for Excel compatibility"""
+    if not text:
+        return ""
+
+    text = str(text)
+
+    # Remove problematic characters for Excel
+    text = re.sub(r'[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]', '', text)
+
+    # Replace HTML entities that might have been decoded
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    text = text.replace('&apos;', "'")
+
+    # Clean up extra whitespace
+    text = ' '.join(text.split())
+
+    return text.strip()
+
+
+def create_summary_sheet(df, writer, workbook):
+    """Create a summary statistics sheet"""
+    summary_data = []
+
+    # Basic statistics
+    total_words = len(df)
+    summary_data.append(['Total Words', total_words])
+
+    # Part of speech distribution
+    pos_counts = df['Part of Speech'].value_counts().sort_index()  # Sort for consistent order
+    summary_data.append(['', ''])  # Empty row
+    summary_data.append(['Part of Speech Distribution', ''])
+    for pos, count in pos_counts.items():
+        summary_data.append([f'  {pos}', count])
+
+    # CEFR level distribution
+    cefr_counts = df['CEFR Level'].value_counts().sort_index()  # Sort for consistent order
+    summary_data.append(['', ''])  # Empty row
+    summary_data.append(['CEFR Level Distribution', ''])
+    for level, count in cefr_counts.items():
+        summary_data.append([f'  {level}', count])
+
+    # Topic distribution (top 15, as there might be many)
+    topic_counts = df['Topic'].value_counts().head(15)
+    summary_data.append(['', ''])  # Empty row
+    summary_data.append(['Top 15 Topics', ''])
+    for topic, count in topic_counts.items():
+        topic_name = topic if len(str(topic)) < 30 else str(topic)[:30] + '...'
+        summary_data.append([f'  {topic_name}', count])
+
+    # Audio availability
+    audio_count = (df['Has Audio'] == 'Yes').sum()
+    summary_data.append(['', ''])  # Empty row
+    summary_data.append(['Audio Availability', ''])
+    summary_data.append(['  Words with Audio', audio_count])
+    summary_data.append(['  Words without Audio', total_words - audio_count])
+
+    # Pronunciation availability
+    pron_count = (df['Has Pronunciation'] == 'Yes').sum()
+    summary_data.append(['', ''])  # Empty row
+    summary_data.append(['Pronunciation Availability', ''])
+    summary_data.append(['  Words with Pronunciation', pron_count])
+    summary_data.append(['  Words without Pronunciation', total_words - pron_count])
+
+    # Average Word Length
+    avg_word_length = df['Word Length'].mean()
+    summary_data.append(['', ''])
+    summary_data.append(['Average Word Length (of base word)', f'{avg_word_length:.2f}'])
+
+    # Average Definition Length
+    avg_def_length = df['Definition Length'].mean()
+    summary_data.append(['Average Definition Length (words)', f'{avg_def_length:.2f}'])
+
+    # Average Example Count
+    avg_example_count = df['Example Count'].mean()
+    summary_data.append(['Average Example Count', f'{avg_example_count:.2f}'])
+
+    # Create summary DataFrame
+    summary_df = pd.DataFrame(summary_data, columns=['Metric', 'Value'])
+
+    # Write to Excel
+    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+    # Format the summary sheet
+    summary_sheet = writer.sheets['Summary']
+    summary_sheet.column_dimensions['A'].width = 40
+    summary_sheet.column_dimensions['B'].width = 15
+
+
 def main():
     """Main function to run the scraper"""
     chromedriver_path = r"D:\EnglishScraper\chromedriver.exe"
 
-    print("🚀 Starting Enhanced English Profile XML scraper...")
+    print("🚀 Starting Enhanced English Profile Scraper (All Difficulties)...")
 
     # Setup driver
     driver = setup_driver(chromedriver_path)
@@ -422,51 +569,51 @@ def main():
         # Handle cookie popup
         handle_cookie_popup(driver, wait)
 
-        # Select C2 level
-        if select_c2_level(driver, wait):
-            print("✅ C2 level selected successfully!")
+        # Skip C2 level selection as we want all difficulties (default)
+        print("ℹ️ Skipping C2 level selection. All difficulty levels will be collected by default.")
 
-            # Click search
-            if click_search_button(driver, wait):
-                print("✅ Search initiated successfully!")
+        # Click search
+        if click_search_button(driver, wait):
+            print("✅ Search initiated successfully!")
 
-                # Wait for initial results
-                print("⏳ Waiting for initial results...")
-                time.sleep(3)
+            # Wait for initial results
+            print("⏳ Waiting for initial results...")
+            time.sleep(5)  # Increased wait time for initial load
 
-                # Select 'All' from dropdown
-                if select_all_from_dropdown(driver, wait):
-                    print("✅ 'All' selected from dropdown!")
+            # Select 'All' from dropdown
+            if select_all_from_dropdown(driver, wait):
+                print("✅ 'All' selected from dropdown!")
 
-                    # Scroll and collect all vocabulary data
-                    vocabulary_data = scroll_and_collect_data(driver, wait)
+                # Scroll and collect all vocabulary data
+                vocabulary_data = scroll_and_collect_data(driver, wait)
 
-                    if vocabulary_data:
-                        # Create XML file
-                        xml_filename = create_xml_from_vocabulary(vocabulary_data)
+                if vocabulary_data:
+                    # Create both XML and Excel files
+                    xml_filename = create_xml_from_vocabulary(vocabulary_data)
+                    excel_filename = create_excel_from_vocabulary(vocabulary_data)
 
-                        print(f"\n🎯 Successfully scraped {len(vocabulary_data)} vocabulary entries!")
-                        print(f"📄 XML file saved as: {xml_filename}")
+                    print(f"\n🎯 Successfully scraped {len(vocabulary_data)} vocabulary entries!")
+                    print(f"📄 XML file saved as: {xml_filename}")
+                    print(f"📊 Excel file saved as: {excel_filename}")
 
-                        # Show sample of extracted data
-                        print(f"\n📝 Sample vocabulary entries:")
-                        for i, entry in enumerate(vocabulary_data[:3], 1):
-                            word = entry.get('base_text', 'N/A')
-                            definition = entry.get('definition_text', 'N/A')[:100] + "..." if len(
-                                entry.get('definition_text', '')) > 100 else entry.get('definition_text', 'N/A')
-                            cefr = entry.get('cefr_text_text', 'N/A')
-                            pos = entry.get('pos_text', 'N/A')
-                            print(f"   {i}. {word} ({pos}, {cefr}): {definition}")
-
-                    else:
-                        print("❌ No vocabulary data collected!")
+                    # Show sample of extracted data
+                    print(f"\n📝 Sample vocabulary entries:")
+                    for i, entry in enumerate(vocabulary_data[:5], 1):  # Display more samples
+                        word = entry.get('base_text', 'N/A')
+                        definition = entry.get('definition_text', 'N/A')
+                        # Truncate definition for display
+                        definition_display = definition[:100] + "..." if len(definition) > 100 else definition
+                        cefr = entry.get('cefr_text_text', 'N/A')
+                        pos = entry.get('pos_text', 'N/A')
+                        print(f"  {i}. {word} ({pos}, {cefr}): {definition_display}")
 
                 else:
-                    print("❌ Failed to select 'All' from dropdown.")
+                    print("❌ No vocabulary data collected!")
+
             else:
-                print("❌ Failed to click search button.")
+                print("❌ Failed to select 'All' from dropdown.")
         else:
-            print("❌ Failed to select C2 level.")
+            print("❌ Failed to click search button.")
 
     except Exception as e:
         print(f"❌ Unexpected error: {str(e)}")
@@ -474,7 +621,7 @@ def main():
         traceback.print_exc()
 
     finally:
-        print("🔄 Keeping browser open for 10 seconds...")
+        print("🔄 Keeping browser open for 10 seconds for review...")
         time.sleep(10)
         driver.quit()
         print("✅ Browser closed.")
